@@ -1,13 +1,13 @@
-# 🧠 神经网络：从数学底层理解架构
+# 🧠 FlexiNN：从数学底层理解神经网络架构
 
 ![Python](https://img.shields.io/badge/Python-3.6%2B-blue)
 ![NumPy](https://img.shields.io/badge/NumPy-1.19%2B-013243)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![状态](https://img.shields.io/badge/Status-Educational-orange)
 
-该神经网络完全由纯'numpy'实现，没有复杂的深度学习架构，只有直观的数学原理
+该神经网络完全由纯 NumPy 实现，没有复杂的深度学习框架，只有直观的数学原理。
 
->该方法是用数学模型和原理实现，所以请仅在小型计算或教学上使用，以节约您宝贵的时间
+> 该方法是用数学模型和原理实现，所以请仅在小型计算或教学上使用，以节约您宝贵的时间。
 
 ---
 ## 📖 目录
@@ -27,13 +27,16 @@
 
 ## ✨ 特性
 
-- **零依赖的黑魔法** — 仅依赖 `numpy` ，所有梯度均手动计算。
-- **任意深度网络** — 可通过 `net_layer` 自由设置隐藏层数量。
-- **数值梯度验证** — 使用中心差分法确保反向传播的正确性，无需推导链式法则。
-- **交叉熵 Softmax** — 原生支持多分类任务。
-- **轻量且透明** — 大约 350 行代码，易于阅读和修改，去除报错提醒大约 150 行。
-- **通融性强** — 有许多地方的值可以覆盖,当然直接使用`self.xxx`进行覆盖也可以
-- **报错定位** — 对于关键位置的出错进行了自定义双语报错，高效精准地找到错误
+- **零依赖的黑魔法** — 仅依赖 `numpy`，所有梯度均手动计算。
+- **通融性强** — 有许多地方的值可以覆盖，当然直接使用 `self.xxx` 进行覆盖也可以。
+- **模块化设计**：内置 `Affine`、`Sigmoid`、`ReLU`、`LeakyReLU`、`Tanh`、`SoftmaxWithLoss`、`Dropout` 等常用层。
+- **灵活的网络配置**：支持任意数量的隐藏层，可自定义每层神经元数量。
+- **多种激活函数**：支持 `relu`、`leaky_relu`、`sigmoid`、`tanh`，默认 `leaky_relu`。
+- **训练控制**：
+  - 批量训练（全量或小批量）支持 `epochs` 和 `batch_size`。
+  - 学习率衰减（可设置衰减率）。
+  - Dropout 正则化（训练时随机失活，预测时缩放）。
+- **模型持久化**：支持保存和加载训练好的模型参数。
 
 ---
 
@@ -42,8 +45,8 @@
 克隆仓库并确保已安装 NumPy：
 
 ```bash
-git clone https://github.com/linuxlemon256/Neural-Network.git
-cd Neural-Network
+git clone https://github.com/linuxlemon256/FlexiNN.git
+cd FlexiNN
 pip install numpy
 ```
 
@@ -52,20 +55,23 @@ pip install numpy
 ## 🚀 快速开始
 
 ```python
-import numpy as np
-from CustomLayerNet import CustomLayerNet
+import numpy as xp
+from FlexiNN import FlexiNN
 
 # 生成模拟数据：100 个样本，5 个特征，3 个类别
-X = np.random.randn(100, 5)
-y = np.eye(3)[np.random.randint(0, 3, 100)] # 独热标签
+X = xp.random.randn(100, 5).astype(xp.float32)
+y = xp.eye(3)[xp.random.randint(0, 3, 100)].astype(xp.float32) # 独热标签
 
-# 创建网络：输入 5 → 隐藏层 10 → 输出 3，总共 3 层，训练 500 轮
-net = CustomLayerNet(input_size=5, hidden_size=10, output_size=3,
-net_layer=3, learning_time=500, learning_rate=0.1)
+# 创建网络：输入 5 → 隐藏层 [10] → 输出 3，训练 500 轮
+net = FlexiNN(input_size=5, hidden_size=[10], output_size=3,
+              learning_time=500, learning_rate=0.1)
 
-# 训练并获得最终预测结果
-output = net.train(X,y)
-pred_class = np.argmax(output, axis=1)
+# 训练
+net.train(X, y)
+
+# 预测
+output = net.predict(X)
+pred_class = xp.argmax(output, axis=1)
 print("前 5 个样本的预测类别：", pred_class[:5])
 ```
 
@@ -75,89 +81,112 @@ print("前 5 个样本的预测类别：", pred_class[:5])
 
 ### 1. 前向传播
 
-每一层执行线性变换 `X @ W + b`。除了使用 Softmax 的最后一层，所有中间层都使用 Sigmoid 激活函数。
+每一层执行线性变换 `X @ W + b`，然后通过激活函数。除了使用 Softmax 的最后一层，所有中间层都使用指定的激活函数（默认 LeakyReLU）。
 
-### 2. 反向传播（数值梯度）
+前向传播时会保存每一层的中间结果（`affine` 对象、`activation` 对象、`dropout` 对象），用于反向传播时计算梯度。
 
-对于每个可训练参数，计算该点的损失函数的**中心差分**近似梯度：
+### 2. 反向传播（误差反向传播）
 
-grad ≈ (loss(W + h) - loss(W - h)) / (2h)
+使用链式法则将损失函数的梯度从输出层反向传播到输入层：
 
-然后使用标准梯度下降更新参数：
-
-W = W - learning_rate * grad
-
-### 3. 误差反向传播
-
-对于训练数据，使用导数返回的方法进行训练，例如:
-
+```
 dL/dy * dy/dx = dL/dx
+```
 
-类似以此方式将下游导数传播到上游函数，仅需对loss-softmax的函数进行传播便可高效计算梯度
+对于 SoftmaxWithLoss 层，梯度为 `(softmax_output - true_label) / batch_size`。
 
-**注意**：每次迭代需要 `2 × 参数总数` 次前向传播，因此此实现仅适用于小型网络和教学用途。
+对于激活层，梯度为 `dout * activation_gradient`：
+- Sigmoid: `out * (1 - out)`
+- ReLU: `x > 0 ? 1 : 0`
+- LeakyReLU: `x > 0 ? 1 : alpha`
+- Tanh: `1 - out^2`
+
+对于 Affine 层，梯度为：
+- `dW = x.T @ dout`
+- `db = sum(dout, axis=0)`
+- `dx = dout @ W.T`
+
+### 3. 参数更新
+
+使用标准梯度下降更新参数：
+
+```
+W = W - learning_rate * dW
+b = b - learning_rate * db
+```
 
 ---
 ## 📚 API 文档
 
-### `CustomLayerNet` 类
+### `FlexiNN` 类
 
 #### 初始化参数
 
 | 参数 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
 | `input_size` | `int` | - | 输入特征的数量 |
-| `hidden_size` | `int` | - | 所有隐藏层中使用的神经元数量 |
+| `hidden_size` | `int` or `list` | - | 隐藏层神经元数量，可为整数或列表 |
 | `output_size` | `int` | - | 输出类别的数量 |
-| `net_layer` | `int` | `2` | 网络层总数（包括输入层和输出层） |
-| `learning_time` | `int` | `1000` | 总训练迭代次数 |
-| `learning_rate` | `float` | `1` | 梯度下降学习率 |
+| `learning_time` | `int` | `1000` | 总训练迭代次数（批量模式） |
+| `learning_rate` | `float` | `0.1` | 梯度下降学习率 |
 | `print_every` | `int` | `100` | `train()` 中每隔多少迭代打印一次损失 |
-| `method` | `dict` | `{"activation":"relu","backpropagation":"errorback","train":"ordinary"}` | 神经网络配置字典：`activation` – 激活函数，可选 `"sigmoid"` 或 `"relu"`；`backpropagation` – 反向传播方式，可选 `"errorback"` 或 `"numerical_differentiation"`；`"train"`保留为未来更新  |
-| `init_weights` | `float` or `None` | `0.1` | 权重初始化标准差；设为 `None` 时自动根据激活函数选择 `Xavier（sigmoid）`或 `He（relu）`初始化 |
+| `activation` | `str` | `"leaky_relu"` | 定义所使用的激活函数 |
+| `init_weights` | `float` or `None` | `None` | 权重初始化标准差；设为 `None` 时自动根据激活函数选择 |
 | `print_output` | `bool` | `True` | 是否在训练过程中打印损失等信息 |
-
-
+| `backpropagation` | `str` | `"error-back"` | 定义所使用的反向传播的方法 |
+| `decay_rate` | `float` | `None` | 学习率衰减率，范围在 `0.0` 到 `1.0` |
+| `dropout_rate` | `float` | `0.0` | 防止过拟合而丢弃的神经元比例 |
 
 #### 核心方法
 
 | 方法 | 返回值 | 描述 |
 |------|--------|------|
-| `forward(x)` | `np.ndarray` | 执行前向传播，返回 softmax 概率输出（形状 `(batch_size, output_size)`），同时保存各层激活到 `self.activations` |
-| `backword(x)` | `list` | 计算损失相对于各层参数的梯度，返回梯度列表（与 `self.fact` 结构相同）；自动将整数标签转换为 `one‑hot` |
-| `train(x, t, method=None)` | `np.ndarray` | 使用全批量梯度下降训练 `learning_time` 次，返回整个训练集的最终 `softmax` 输出；可通过 `method` 参数临时覆盖配置 |
-| `loss(out)` | `float` | 计算交叉熵损失（自动将 `self.t` 转为 `one‑hot` 以匹配 `out`） |
-| `softmax(x)` | `np.ndarray` | 按行计算 softmax 激活（用于输出层） |
-| `sigmoid(x)` | `np.ndarray` | 按元素计算 sigmoid 激活 |
-| `accuracy(out, t=None)` | `float` | 计算分类准确率；可传入 `t` 作为真实标签（支持整数或 one‑hot），否则使用 `self.t`|
-| `update(grad)` | - | 根据梯度 `grad` 和学习率更新所有层的权重与偏置 |
-| `relu(x)` | `np.ndarray` | 按元素计算 ReLU 激活（`max(0, x)`）|
-| `affine(x, fact)` | `np.ndarray` | 仿射变换：`np.dot(x, w) + b` |
----
-> **注意**：`backward` 在反向传播时会自动处理整数标签转 one‑hot，并使用 Leaky ReLU（负半轴梯度 `0.1`）以避免神经元死亡。`accuracy` 支持直接传入标签 `t`，无需预先设置 `self.t`。
----
+| `train(x, t, ...)` | `None` | 训练网络，支持批量和小批量训练 |
+| `predict(x)` | `xp.ndarray` | 执行前向传播，返回 softmax 概率输出 |
+| `accuracy(x, t)` | `float` | 计算分类准确率，`x` 为预测输出，`t` 为真实标签 |
+| `save(name=None)` | `None` | 保存模型参数到 `.npz` 文件 |
+| `load(name=None)` | `None` | 从 `.npz` 文件加载模型参数 |
 
+#### train 方法参数
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `x` | `xp.ndarray` | - | 训练数据 |
+| `t` | `xp.ndarray` | - | 训练标签（独热编码） |
+| `learning_time` | `int` | `None` | 覆盖初始化的训练次数 |
+| `learning_rate` | `float` | `None` | 覆盖初始化的学习率 |
+| `batch_size` | `int` | `None` | 小批量大小，`None` 为批量训练 |
+| `epochs` | `int` | `100` | 训练轮数（小批量模式） |
+| `decay_rate` | `float` | `None` | 覆盖初始化的衰减率 |
+| `dropout_rate` | `float` | `None` | 覆盖初始化的 Dropout 率 |
+| `print_every` | `int` | `None` | 覆盖初始化的打印间隔 |
+| `print_output` | `bool` | `None` | 覆盖初始化的打印开关 |
+
+---
 
 ## 🧪 示例
 
 ### 1. XOR 问题
 
 XOR 是一个经典的线性不可分问题，需要至少一个隐藏层才能学习。
+
 ```python
-import numpy as np
-from CustomLayerNet import CustomLayerNet
+import numpy as xp
+from FlexiNN import FlexiNN
 
-X = np.array([[0,0], [0,1], [1,0], [1,1]])
-y = np.array([[1,0], [0,1], [0,1], [1,0]]) # 两类one-hot
+X = xp.array([[0,0], [0,1], [1,0], [1,1]]).astype(xp.float32)
+y = xp.array([[1,0], [0,1], [0,1], [1,0]]).astype(xp.float32) # 两类 one-hot
 
-# 创建网络：输入 2 维，隐藏层 4 个神经元，输出 2 维
-net = CustomLayerNet(input_size=2, hidden_size=4, output_size=2,
-net_layer=3, learning_time=2000, learning_rate=0.1)
-
+# 创建网络：输入 2 维，隐藏层 [4]，输出 2 维
+net = FlexiNN(input_size=2, hidden_size=[4], output_size=2,
+              learning_time=2000, learning_rate=0.1)
 
 # 训练
-out = net.train(X,y)
-predicted_classes = np.argmax(out, axis=1)
+net.train(X, y)
+
+# 预测
+out = net.predict(X)
+predicted_classes = xp.argmax(out, axis=1)
 print("预测的类别序列:", predicted_classes)
 ```
 
@@ -170,53 +199,78 @@ print("预测的类别序列:", predicted_classes)
 ```python
 from sklearn.datasets import load_iris
 from sklearn.preprocessing import OneHotEncoder
-from CustomLayerNet import CustomLayerNet
-import numpy as np
+from FlexiNN import FlexiNN
+import numpy as xp
 
 # 加载数据
 iris = load_iris()
-X = iris.data
-y = OneHotEncoder(sparse=False).fit_transform(iris.target.reshape(-1,1))
+X = xp.array(iris.data, dtype=xp.float32)
+y = xp.array(OneHotEncoder(sparse=False).fit_transform(iris.target.reshape(-1,1)), dtype=xp.float32)
 
-# 创建网络：输入4维，隐藏层8个神经元，输出3个类别
-net = CustomLayerNet(input_size=4, hidden_size=8, output_size=3,
-net_layer=3, learning_time=800, learning_rate=1)
+# 创建网络：输入 4 维，隐藏层 [8]，输出 3 个类别
+net = FlexiNN(input_size=4, hidden_size=[8], output_size=3,
+              learning_time=800, learning_rate=0.1)
 
+# 训练
+net.train(X, y)
 
-# 训练并获取预测值
-pred = net.train(X,y)
-accuracy = np.mean(np.argmax(pred, axis=1) == iris.target)
+# 预测并计算准确率
+pred = net.predict(X)
+accuracy = xp.mean(xp.argmax(pred, axis=1) == xp.array(iris.target))
 print(f"鸢尾花数据集上的准确率: {accuracy:.2%}")
+
+# 保存模型
+net.save("iris_model")
+
+# 加载模型
+net.load("iris_model")
 ```
+
+---
+
+### 3. 小批量训练与学习率衰减
+
+```python
+import numpy as xp
+from FlexiNN import FlexiNN
+
+# 生成模拟数据
+X = xp.random.randn(500, 10).astype(xp.float32)
+y = xp.eye(5)[xp.random.randint(0, 5, 500)].astype(xp.float32)
+
+# 创建网络：输入 10 → 隐藏层 [32, 16] → 输出 5
+net = FlexiNN(input_size=10, hidden_size=[32, 16], output_size=5,
+              learning_rate=0.1, dropout_rate=0.3)
+
+# 小批量训练，学习率每轮衰减 0.99
+net.train(X, y, epochs=200, batch_size=32, decay_rate=0.99)
+
+# 预测
+output = net.predict(X)
+accuracy = net.accuracy(output, y)
+print(f"准确率: {accuracy:.4f}")
+```
+
 ---
 ## 🐢 性能描述
 
-由于使用了数值梯度，该实现的计算成本与网络参数的数量成正比。每次训练迭代每个参数都需要两次前向传递（中心差分法）。不同规模网络的近似性能如下：
+由于使用了解析梯度（误差反向传播），该实现的计算效率远高于数值微分方法。每次训练迭代只需一次前向传播和一次反向传播。
 
 - **微型网络 (2-4-2)**
-例如 XOR 问题，大约有 22 个参数。。
-- ***数值微分:***
-- 训练可以在几秒钟内完成
-- ***误差反向传播*:***
-- 在零点几秒便可完成
+  - 例如 XOR 问题，大约有 22 个参数。
+  - 训练可以在零点几秒内完成。
 
 - **小型网络 (4-8-3)**
-例如鸢尾花分类，大约有 67 个参数。
-- ***数值微分:***
-- 训练可以在一分钟内完成
-- ***误差反向传播*:***
-- 在几至几十秒可完成
+  - 例如鸢尾花分类，大约有 67 个参数。
+  - 训练可以在几秒内完成。
 
 - **中等网络 (784-128-10)**  
-例如，MNIST 手写数字识别，参数超过 100,000 个。
-- ***数值微分:***
-- 未测试，每次迭代需要数十万次前向传播，并且单次迭代可能耗时数小时。
-- ***误差反向传播*:***
-- 需要几至几十分钟完成
+  - 例如 MNIST 手写数字识别，参数超过 100,000 个。
+  - 训练需要几至几十分钟完成。
 
-**注意**：数值微分方法计算效率低，内存消耗大。
+**注意**：此代码库旨在作为教学工具，清楚展示神经网络的内部机制。对于任何实际规模的任务，强烈建议改用基于 GPU 加速的框架，如 PyTorch 或 TensorFlow。
 
-**结论**：此代码库旨在作为教学工具，清楚展示梯度下降的内部机制。对于任何实际规模的任务，该方法在大数据处理上计算能力较低，强烈建议改用基于解析梯度（反向传播算法）的框架，如 PyTorch 或 TensorFlow。
+**已知限制**：`Convolution` 和 `Pooling` 类目前为占位符（`pass`），尚未实现卷积和池化功能。
 
 ---
 ## 📄 许可证
