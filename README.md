@@ -25,6 +25,7 @@ This neural network is built **purely with NumPy** — no fancy deep learning fr
 - [Iris Classification](#2-iris-classification)
 - [Mini-Batch Training](#3-mini-batch-training-with-learning-rate-decay)
 - [CNN Image Classification](#4-cnn-image-classification)
+- [MNIST Benchmark](#5-mnist-benchmark-985-target-within-500-epochs)
 - [Performance Notes](#-performance-notes)
 - [License](#-license)
 
@@ -35,7 +36,7 @@ This neural network is built **purely with NumPy** — no fancy deep learning fr
 - **Zero-Dependency Dark Magic** — Only `numpy`, all gradients calculated by hand. No `import torch` here, cowboy.
 - **GPU Option** — Swap in `FNN_cupy.py` and train on CUDA. Same code, different backend (`import cupy as xp`).
 - **Super Flexible** — Most settings can be overridden on the fly. Want to change learning rate mid-training? Go wild.
-- **Modular Design**: Built-in layers like `Affine`, `Sigmoid`, `ReLU`, `LeakyReLU`, `Tanh`, `SoftmaxWithLoss`, `Dropout`, `Convolution`, and `Pooling`.
+- **Modular Design**: Built-in layers like `Affine`, `BatchNorm`, `Sigmoid`, `ReLU`, `LeakyReLU`, `Tanh`, `SoftmaxWithLoss`, `Dropout`, `Convolution`, and `Pooling`.
 - **Fully Working CNN**: `Convolution` + `Pooling` implemented with `im2col`/`col2im`. Max pooling *and* average pooling. No more placeholders, baby.
 - **Customizable Network**: Any number of hidden layers, any number of neurons per layer. Mix and match like a neural network DJ.
 - **Activation Functions**: `relu`, `leaky_relu`, `sigmoid`, `tanh`. Default is `leaky_relu` (because dead neurons are sad).
@@ -45,6 +46,7 @@ This neural network is built **purely with NumPy** — no fancy deep learning fr
   - Full batch or mini-batch training with `epochs` and `batch_size`.
   - Learning rate decay (for when your network needs to chill out).
   - Dropout regularization (randomly fire some neurons, keep things spicy).
+  - Optional Adam optimization and batch normalization for deeper MLPs.
 - **Model Persistence**: Save and load trained models to `.npz`. Loading auto-rebuilds the layer structure.
 
 ---
@@ -165,6 +167,9 @@ Simple, elegant, and it works (most of the time).
 | `backpropagation` | `str` | `"error-back"` | Backpropagation method |
 | `decay_rate` | `float` | `None` | Learning rate decay rate (0.0 to 1.0) |
 | `dropout_rate` | `float` | `0.0` | Dropout probability (hidden layers) |
+| `optimizer` | `str` | `"sgd"` | `"sgd"` or bias-corrected `"adam"` |
+| `batch_norm` | `bool` | `False` | Normalize each hidden affine output during training |
+| `seed` | `int` or `None` | `None` | Seed used for initialization, shuffling, and dropout |
 
 #### Core Methods
 
@@ -340,6 +345,23 @@ print("First 10 predictions:", pred[:10])
 ```
 
 ---
+### 5. MNIST Benchmark: 98.5% Target within 500 Epochs
+
+The NumPy-only benchmark uses a `784 → 1024 → 512 → 256 → 10` MLP with
+BatchNorm, Adam, dropout, and small integer translations during training. It
+averages five translated views at inference, splits the original training set
+into 55,000 training and 5,000 validation samples, and only evaluates the test
+set when explicitly requested.
+
+```bash
+python examples/train_mnist.py --epochs 500 --evaluate-test
+```
+
+The script stops when validation accuracy reaches 98.9% (or its 500-epoch
+limit), restores the best validation checkpoint, and then evaluates the
+official test set once. It exits unsuccessfully if the final test accuracy is
+below 98.5%.
+
 ## 🐢 Performance Notes
 
 Since we're using analytical gradients (backpropagation), this is way faster than numerical differentiation. Each iteration is just one forward pass + one backward pass.
