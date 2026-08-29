@@ -67,6 +67,37 @@ class Tanh:
         dx = dout * (1 - self.out**2)
         return dx
 
+class BatchNorm:
+    """Batch normalization for two-dimensional MLP activations."""
+    def __init__(self, gamma, beta, running_mean, running_var, momentum=0.9, eps=1e-7):
+        self.gamma = gamma
+        self.beta = beta
+        self.running_mean = running_mean
+        self.running_var = running_var
+        self.momentum = momentum
+        self.eps = eps
+        self.x_normalized = None
+        self.std = None
+        self.dgamma = None
+        self.dbeta = None
+    def forward(self, x, training=True):
+        if training:
+            mean = xp.mean(x, axis=0)
+            variance = xp.mean((x - mean) ** 2, axis=0)
+            self.std = xp.sqrt(variance + self.eps)
+            self.x_normalized = (x - mean) / self.std
+            self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * mean
+            self.running_var = self.momentum * self.running_var + (1 - self.momentum) * variance
+        else:
+            self.x_normalized = (x - self.running_mean) / xp.sqrt(self.running_var + self.eps)
+        return self.gamma * self.x_normalized + self.beta
+    def backward(self, dout):
+        self.dbeta = xp.sum(dout, axis=0)
+        self.dgamma = xp.sum(dout * self.x_normalized, axis=0)
+        dx_normalized = dout * self.gamma
+        batch_size = dout.shape[0]
+        return ((batch_size * dx_normalized) - xp.sum(dx_normalized, axis=0) - self.x_normalized * xp.sum(dx_normalized * self.x_normalized, axis=0)) / (batch_size * self.std)
+
 class SoftmaxWithLoss:
     def __init__(self):
         self.out = None
@@ -74,7 +105,7 @@ class SoftmaxWithLoss:
         self.batch = None
         self.loss_date = None
     def softmax(self,x):
-        x -= xp.max(x, axis=-1, keepdims=True)
+        x = x - xp.max(x, axis=-1, keepdims=True)
         exp_x = xp.exp(x)
         out = exp_x / xp.sum(exp_x, axis=-1, keepdims=True)
         self.out = out
@@ -186,16 +217,24 @@ class Pooling:
         return dx
 
 class Dropout:
-    def __init__(self,rate = 0):
+    def __init__(self,rate = 0, rng=None):
+        if not 0 <= rate < 1:
+            raise ValueError("dropout_rate must be in [0, 1)")
         self.rate = rate
+        self.rng = rng if rng is not None else xp.random
         self.mask = None
     def forward(self,x):
-        self.mask = xp.random.rand(*x.shape) > self.rate
-        return xp.multiply(x, self.mask)
+        if self.rate == 0:
+            self.mask = None
+            return x
+        self.mask = self.rng.random(x.shape) > self.rate
+        return xp.multiply(x, self.mask) / (1.0 - self.rate)
     def backward(self,dout):
-        return xp.multiply(dout, self.mask)
+        if self.mask is None:
+            return dout
+        return xp.multiply(dout, self.mask) / (1.0 - self.rate)
     def predict(self,x):
-        return xp.multiply(x, 1.0 - self.rate)
+        return x
 
 class MLP:
     def __init__(self,input_size,
@@ -210,6 +249,13 @@ class MLP:
                  backpropagation = "error-back",
                  decay_rate = None,
                  dropout_rate = 0.0,
+                 optimizer = "sgd",
+                 beta1 = 0.9,
+                 beta2 = 0.999,
+                 epsilon = 1e-8,
+                 batch_norm = False,
+                 batch_norm_momentum = 0.9,
+                 seed = None,
                  ):
 
         self.input_size = input_size
@@ -225,6 +271,20 @@ class MLP:
         self.params = {}
         self.decay_rate = decay_rate
         self.dropout_rate = dropout_rate
+        self.optimizer = optimizer.lower()
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.batch_norm = batch_norm
+        self.batch_norm_momentum = batch_norm_momentum
+        self.rng = xp.random.RandomState(seed)
+        self._optimizer_step = 0
+        self._optimizer_state = {}
+
+        if self.optimizer not in ("sgd", "adam"):
+            raise ValueError("optimizer must be either 'sgd' or 'adam'")
+        if not 0 <= self.dropout_rate < 1:
+            raise ValueError("dropout_rate must be in [0, 1)")
 
 
         if init_weights is None:
@@ -240,16 +300,30 @@ class MLP:
             w_layer = "W" + str(layer)
             b_layer = "b" + str(layer)
             if layer == 0:
-                self.params[w_layer] = xp.random.randn(self.input_size, self.hidden_size[0]).astype(xp.float32) * xp.sqrt(weights / self.input_size)
+                self.params[w_layer] = self.rng.randn(self.input_size, self.hidden_size[0]).astype(xp.float32) * xp.sqrt(weights / self.input_size)
                 self.params[b_layer] = xp.zeros(self.hidden_size[0]).astype(xp.float32)
             elif layer < self.net_layer-1:
-                self.params[w_layer] = xp.random.randn(self.hidden_size[layer - 1], self.hidden_size[layer]).astype(xp.float32) * xp.sqrt(weights / self.hidden_size[layer - 1])
+                self.params[w_layer] = self.rng.randn(self.hidden_size[layer - 1], self.hidden_size[layer]).astype(xp.float32) * xp.sqrt(weights / self.hidden_size[layer - 1])
                 self.params[b_layer] = xp.zeros(self.hidden_size[layer]).astype(xp.float32)
             elif layer == self.net_layer-1:
-                self.params[w_layer] = xp.random.randn(self.hidden_size[-1], self.output_size).astype(xp.float32) * xp.sqrt(weights / self.hidden_size[-1])
+                self.params[w_layer] = self.rng.randn(self.hidden_size[-1], self.output_size).astype(xp.float32) * xp.sqrt(weights / self.hidden_size[-1])
                 self.params[b_layer] = xp.zeros(self.output_size).astype(xp.float32)
 
+        if self.batch_norm:
+            for layer, width in enumerate(self.hidden_size):
+                self.params["gamma" + str(layer)] = xp.ones(width, dtype=xp.float32)
+                self.params["beta" + str(layer)] = xp.zeros(width, dtype=xp.float32)
+                self.params["running_mean" + str(layer)] = xp.zeros(width, dtype=xp.float32)
+                self.params["running_var" + str(layer)] = xp.ones(width, dtype=xp.float32)
 
+        self._reset_optimizer_state()
+
+    def _reset_optimizer_state(self):
+        self._optimizer_step = 0
+        self._optimizer_state = {
+            name: {"m": xp.zeros_like(value), "v": xp.zeros_like(value)}
+            for name, value in self.params.items()
+        }
 
     def train(self,x, t,
               learning_time = None,
@@ -291,7 +365,7 @@ class MLP:
                         print(f"Iteration : {time} / {self.learning_time}\t|\tloss : {softmax_with_loss.loss_date:.6f}\t")
         else:
             for epoch in range(epochs):
-                n = xp.random.permutation(x.shape[0])
+                n = self.rng.permutation(x.shape[0])
                 x_shuffle = x[n]
                 t_shuffle = t[n] if t.ndim == 1 else t[n]
                 for start in range(0, x.shape[0], batch_size):
@@ -308,9 +382,7 @@ class MLP:
 
 
     def predict(self,x):
-        activation = self.load_activation()
         softmax_with_loss = SoftmaxWithLoss()
-        dropout = Dropout(self.dropout_rate)
         out = x
         for layer in range(self.net_layer):
             W_layer = self.params["W" + str(layer)]
@@ -318,8 +390,16 @@ class MLP:
             affine = Affine(W_layer, b_layer)
             if layer < self.net_layer-1:
                 out = affine.forward(out)
-                out = activation.forward(out)
-                out = dropout.predict(out)
+                if self.batch_norm:
+                    batch_norm = BatchNorm(
+                        self.params["gamma" + str(layer)],
+                        self.params["beta" + str(layer)],
+                        self.params["running_mean" + str(layer)],
+                        self.params["running_var" + str(layer)],
+                        self.batch_norm_momentum,
+                    )
+                    out = batch_norm.forward(out, training=False)
+                out = self.load_activation().forward(out)
             else:
                 out = affine.forward(out)
                 out = softmax_with_loss.softmax(out)
@@ -349,12 +429,16 @@ class MLP:
         grads = {}
         dout = 1
         for layer in reversed(range(self.net_layer)):
-            affine, activation, dropout = d[layer]
+            affine, batch_norm, activation, dropout = d[layer]
             if layer == self.net_layer - 1:
                 dout = softmax_with_loss.backward(dout)
             else:
                 dout = dropout.backward(dout)
                 dout = activation.backward(dout)
+                if batch_norm is not None:
+                    dout = batch_norm.backward(dout)
+                    grads["gamma" + str(layer)] = batch_norm.dgamma
+                    grads["beta" + str(layer)] = batch_norm.dbeta
             dout = affine.backward(dout)
             grads["W" + str(layer)] = affine.dW
             grads["b" + str(layer)] = affine.db
@@ -368,23 +452,46 @@ class MLP:
             affine = Affine(W_layer, b_layer)
 
             if layer < self.net_layer - 1:
-                dropout = Dropout(self.dropout_rate)
+                dropout = Dropout(self.dropout_rate, self.rng)
                 activation = self.load_activation()
                 out = affine.forward(out)
+                batch_norm = None
+                if self.batch_norm:
+                    batch_norm = BatchNorm(
+                        self.params["gamma" + str(layer)],
+                        self.params["beta" + str(layer)],
+                        self.params["running_mean" + str(layer)],
+                        self.params["running_var" + str(layer)],
+                        self.batch_norm_momentum,
+                    )
+                    out = batch_norm.forward(out)
+                    self.params["running_mean" + str(layer)] = batch_norm.running_mean
+                    self.params["running_var" + str(layer)] = batch_norm.running_var
                 out = activation.forward(out)
                 out = dropout.forward(out)
-                d[layer] = (affine, activation, dropout)
+                d[layer] = (affine, batch_norm, activation, dropout)
             else:
                 out = affine.forward(out)
                 out = softmax_with_loss.forward(out, self.t)
-                d[layer] = (affine, None, None)
+                d[layer] = (affine, None, None, None)
         return d
 
     def update(self,grads):
         params = self.params
-        for layer in range(self.net_layer):
-            params["W" + str(layer)] -= self.learning_rate * grads["W" + str(layer)]
-            params["b" + str(layer)] -= self.learning_rate * grads["b" + str(layer)]
+        if self.optimizer == "sgd":
+            for name, gradient in grads.items():
+                params[name] -= self.learning_rate * gradient
+        else:
+            self._optimizer_step += 1
+            correction1 = 1.0 - self.beta1 ** self._optimizer_step
+            correction2 = 1.0 - self.beta2 ** self._optimizer_step
+            for name, gradient in grads.items():
+                state = self._optimizer_state[name]
+                state["m"] = self.beta1 * state["m"] + (1.0 - self.beta1) * gradient
+                state["v"] = self.beta2 * state["v"] + (1.0 - self.beta2) * gradient ** 2
+                m_hat = state["m"] / correction1
+                v_hat = state["v"] / correction2
+                params[name] -= self.learning_rate * m_hat / (xp.sqrt(v_hat) + self.epsilon)
         if self.decay_rate:
             self.learning_rate *= self.decay_rate
         return params
@@ -406,20 +513,11 @@ class MLP:
             name = str(name)
         if name[-4:] != ".npz":
             name += ".npz"
-        params=xp.load(name)
-        params_dict = {}
-        try:
-            layer = 0
-            while True:
-                params_dict["W" + str(layer)] = params["W" + str(layer)]
-                params_dict["b" + str(layer)] = params["b" + str(layer)]
-                layer +=1
-        except KeyError:
-            print("rebuilding...")
-            self.net_layer = layer
-            print("done")
-            print(f"layer: {layer}\t|\tinput shape: {self.input_size}\t|\thidden shape: {self.hidden_size}\t|\toutput shape: {self.output_size}")
-        self.params = params_dict
+        with xp.load(name) as params:
+            self.params = {key: params[key] for key in params.files}
+        self.net_layer = len([key for key in self.params if key.startswith("W")])
+        self.batch_norm = any(key.startswith("gamma") for key in self.params)
+        self._reset_optimizer_state()
 
 class CNN:
     def __init__(self,input_shape,output_size,conv_w,conv_b,pool_h,pool_w,activation = "relu",
